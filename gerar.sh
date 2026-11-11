@@ -4,7 +4,7 @@
 #  1. baixa o Planetiler e o pmtiles (programas livres);
 #  2. baixa o mapa do Brasil (OpenStreetMap, Geofabrik) e monta um mapa enxuto (perfil OpenMapTiles):
 #     sem predios, sem numero de casa, sem picos e aeroportos, zoom ate o nivel da rua (14);
-#  3. pega as regioes imediatas do IBGE (510) e corta um arquivo .pmtiles por regiao;
+#  3. pega as regioes imediatas do IBGE (510) e corta um arquivo .pmtiles por regiao (caixa + 3 km);
 #  4. faz o catalogo (catalogo.txt) e o pacote de letras do mapa (fontes.zip).
 #
 # Variaveis: REGIAO (opcional: so uma regiao, pelo codigo do IBGE ou nome de uma cidade, para teste rapido),
@@ -12,7 +12,7 @@
 # Dados: (c) colaboradores do OpenStreetMap (ODbL). Regioes e cidades: IBGE.
 set -euo pipefail
 cd "$(dirname "$0")"
-mkdir -p trabalho saida formas
+mkdir -p trabalho saida
 cd trabalho
 REGIAO="${REGIAO:-}"
 MEMORIA="${MEMORIA:-10g}"
@@ -29,9 +29,23 @@ fi
 java -version
 
 echo "== 2. Regioes do IBGE"
-curl -fsSL "$IBGE/v1/localidades/regioes-imediatas" -o regioes.json
-curl -fsSL "$IBGE/v1/localidades/municipios" -o municipios.json
-curl -fsSL "$IBGE/v3/malhas/paises/BR?formato=application/vnd.geo%2Bjson&intrarregiao=regiao-imediata&qualidade=intermediaria" -o malha.geojson
+# O site do IBGE as vezes nao responde para computadores fora do Brasil (o GitHub roda nos EUA).
+# Por isso: tenta 3 vezes; se nao der, usa a copia guardada na pasta ibge/ do repositorio.
+ibge() {  # ibge <arquivo> <endereco>
+  if curl -fsSL --retry 3 --retry-delay 15 --connect-timeout 30 --max-time 300 -o "$1" "$2" && [ -s "$1" ]; then
+    echo "  $1: baixado do IBGE"
+  elif [ -s "../ibge/$1" ]; then
+    cp "../ibge/$1" "$1"; echo "  $1: copia da pasta ibge/"
+  else
+    echo "ERRO: o IBGE nao respondeu e nao ha copia em ibge/$1."
+    echo "Baixe pelo navegador e envie para a pasta ibge/ do repositorio (veja o guia, passo 4b):"
+    echo "  $2"
+    exit 1
+  fi
+}
+ibge regioes.json "$IBGE/v1/localidades/regioes-imediatas"
+ibge municipios.json "$IBGE/v1/localidades/municipios"
+ibge malha.geojson "$IBGE/v3/malhas/paises/BR?formato=application/vnd.geo%2Bjson&intrarregiao=regiao-imediata&qualidade=minima"
 echo "regioes: $(jq length regioes.json) · municipios: $(jq length municipios.json) · formas: $(jq '.features | length' malha.geojson)"
 
 # Caixa (oeste sul leste norte) de cada forma.
@@ -75,11 +89,12 @@ i=0
 while IFS=$'\t' read -r id nome uf; do
   i=$((i + 1))
   if [ -n "$REGIAO" ] && [ "$id" != "$REGIAO" ]; then continue; fi
-  jq -c --arg id "$id" '.features[] | select((.properties.codarea | tostring) == $id) | {type: "Feature", properties: {}, geometry: .geometry}' \
-     malha.geojson > "../formas/r$id.geojson"
-  if [ ! -s "../formas/r$id.geojson" ]; then echo "  sem forma: $id $nome (pulei)"; continue; fi
+  linha=$(grep -P "^$id\t" caixas.tsv || true)
+  if [ -z "$linha" ]; then echo "  sem forma: $id $nome (pulei)"; continue; fi
+  # Corta pela caixa da regiao com folga de ~3 km: quem mora na divisa nao fica sem as ruas de perto.
+  corte=$(echo "$linha" | awk -F'\t' '{ printf "%.4f,%.4f,%.4f,%.4f", $2 - 0.03, $3 - 0.03, $4 + 0.03, $5 + 0.03 }')
   arq="../saida/r$id.pmtiles"
-  ./pmtiles extract brasil.pmtiles "$arq" --region="../formas/r$id.geojson" > /dev/null
+  ./pmtiles extract brasil.pmtiles "$arq" --bbox="$corte" > /dev/null
   bytes=$(stat -c %s "$arq")
   sha=$(sha256sum "$arq" | cut -d' ' -f1)
   caixa=$(grep -P "^$id\t" caixas.tsv | cut -f2-5 | awk -F'\t' '{printf "%.5f\t%.5f\t%.5f\t%.5f", $1, $2, $3, $4}' || true)
