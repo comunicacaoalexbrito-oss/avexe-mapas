@@ -31,11 +31,23 @@ java -version
 echo "== 2. Regioes do IBGE"
 # O site do IBGE as vezes nao responde para computadores fora do Brasil (o GitHub roda nos EUA).
 # Por isso: tenta 3 vezes; se nao der, usa a copia guardada na pasta ibge/ do repositorio.
+# A copia pode estar em ibge/ ou IBGE/, e a lista de regioes pode se chamar regioes.json ou regioes-imediatas.json.
+copia_ibge() {
+  local nomes="$1"
+  [ "$1" = regioes.json ] && nomes="regioes.json regioes-imediatas.json"
+  [ "$1" = malha.geojson ] && nomes="malha.geojson malha.json BR BR.json BR.geojson"
+  for pasta in ../ibge ../IBGE ../Ibge; do
+    for n in $nomes; do
+      if [ -s "$pasta/$n" ] && head -c 1 "$pasta/$n" | grep -q '[[{]'; then echo "$pasta/$n"; return 0; fi
+    done
+  done
+  return 1
+}
 ibge() {  # ibge <arquivo> <endereco>
   if curl -fsSL --retry 3 --retry-delay 15 --connect-timeout 30 --max-time 300 -o "$1" "$2" && [ -s "$1" ]; then
     echo "  $1: baixado do IBGE"
-  elif [ -s "../ibge/$1" ]; then
-    cp "../ibge/$1" "$1"; echo "  $1: copia da pasta ibge/"
+  elif copia=$(copia_ibge "$1"); then
+    cp "$copia" "$1"; echo "  $1: copia de $copia"
   else
     echo "ERRO: o IBGE nao respondeu e nao ha copia em ibge/$1."
     echo "Baixe pelo navegador e envie para a pasta ibge/ do repositorio (veja o guia, passo 4b):"
